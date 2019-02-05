@@ -36,38 +36,49 @@ library(magrittr)
 
 # need to read in annotation from create counts.final, master, counts.final.inc_outliers, and master.inc_outliers
 # read in annotation from GEO, and standardize and match column names
+GEO_repository <- "GSE110914"
+GEO_data <- GEOquery::getGEO(GEO_repository)
+
 master.inc_outliers <-
-  xlsx::read.xlsx("T1D_neutrophils_metadata_GEO.xlsx") %>%
-  standardize_dimnames() %>%
-  plyr::rename(
-    replace=c(
-      "title"="patient_id",
-      "libraryid"="library_id",
-      "group"="donor_type",
-      "group_aab_status"="donor_type_aab_status"))
+  GEO_data[[1]]@phenoData@data %>%
+  select(patient_id=title,
+         geo_accession,
+         source_name=source_name_ch1, organism=organism_ch1,
+         library_id=`libraryid:ch1`,
+         donor_type=`group:ch1`,
+         donor_type_aab_status=`group_aab_status:ch1`,
+         age=`age:ch1`,
+         neutrophil_purity_percent=`neutrophil_purity_percent:ch1`,
+         eosinophil_purity_percent=`eosinophil_purity_percent:ch1`) %>%
+  mutate(age=as.numeric(age),
+         neutrophil_purity_percent=as.numeric(neutrophil_purity_percent),
+         eosinophil_purity_percent=as.numeric(eosinophil_purity_percent),
+         donor_type=
+           factor(donor_type,
+                  levels=c("Healthy control", "at_risk", "T1Dnew")),
+         donor_type_aab_status=
+           factor(donor_type_aab_status,
+                  levels=c("HC", "Aab_neg", "Aab_pos", "T1Dnew")))
+levels(master.inc_outliers$donor_type) <-
+  c("HC", "at_risk", "T1Dnew")
 
 master.inc_outliers$library_id <-
-  master.inc_outliers$library_id %>%
-  str_extract("[0-9]+$")
+  str_extract(master.inc_outliers$library_id, "[0-9]+$")
 
-# create version without outliers
-outlier_libs.tmp <- c("3474", "4177", "4183")
-master <-
-  master.inc_outliers[
-    !(master.inc_outliers$library_id %in% outlier_libs.tmp),]
 
-## read in counts from GEO, and modify to match upstream processing
+## download counts from GEO, read them in, and modify to match upstream processing
+getGEOSuppFiles(GEO_repository)
+counts_file <- file.path(GEO_repository, "GSE110914_raw_counts_T1D_neutrophils.txt.gz")
 counts.final.inc_outliers <-
-  read.table("raw_counts_T1D_neutrophils.txt", sep="\t") %>%
-  mutate(HGNC.symbol=get_HGNC(rownames(.), type="protein_coding"))
-colnames(counts.final.inc_outliers) <-
-  colnames(counts.final.inc_outliers) %>%
-  str_extract("[0-9]+$")
+  read.table(counts_file, header=T) %>%
+  mutate(HGNC.symbol=get_HGNC(ORF, type="protein_coding")) %>%
+  select(-ORF) %>%
+  select(HGNC.symbol, everything())
 
 ## sum counts.merged for duplicated HGNC symbols
 # this also drops rows with HGNC.symbols==NA, which should include any genes that are not protein-coding
 counts.final.inc_outliers <-
-  aggregate(counts.final.inc_outliers[, -ncol(counts.final.inc_outliers)],
+  aggregate(counts.final.inc_outliers[, -1],
             by=list(counts.final.inc_outliers$HGNC.symbol), sum)
 rownames(counts.final.inc_outliers) <- counts.final.inc_outliers$Group.1
 counts.final.inc_outliers <-
@@ -75,6 +86,22 @@ counts.final.inc_outliers <-
 colnames(counts.final.inc_outliers) <-
   colnames(counts.final.inc_outliers) %>%
   str_extract("[0-9]+$")
+
+## sex omitted from annotation; infer it from X and Y chromosome counts
+xy_ratio <- 
+  logXYratio(
+    counts.final.inc_outliers,
+    lib_cols=1:ncol(counts.final.inc_outliers),
+    gene_ID="symbol")
+xy_ratio_break <- 8
+master.inc_outliers$sex <-
+  ifelse(xy_ratio > xy_ratio_break, "F", "M")
+
+# create version of annotation without outliers
+outlier_libs.tmp <- c("3474", "4177", "4183")
+master <-
+  master.inc_outliers[
+    !(master.inc_outliers$library_id %in% outlier_libs.tmp),]
 
 # create version of counts without outliers
 counts.final <-
@@ -85,21 +112,21 @@ counts.final <-
 ##### load data if using results of T1D_neutrophils_1_process_count_data.R #####
 # skip this section if objects were NOT generated using the scripts in T1D_neutrophils_1_load_data.R
 
-load(file="T1D_neutrophils_data_for_analysis.Rdata")
-
+# load(file="T1D_neutrophils_data_for_analysis.Rdata")
+# 
 ## generate "master" objects for simplicity of adapting downstream code
-master <-
-  sample_annotation.final %>%
-  plyr::rename(replace=c("age_at_sample_coll"="age"))
-master$donor_type <-
-  factor(master$donor_type,
-         levels=c("HC", "at_risk", "T1Dnew"))
-
-master.inc_outliers <- sample_annotation.final.inc_outliers %>%
-  plyr::rename(replace=c("age_at_sample_coll"="age"))
-master.inc_outliers$donor_type <-
-  factor(master.inc_outliers$donor_type,
-         levels=c("HC", "at_risk", "T1Dnew"))
+# master <-
+#   sample_annotation.final %>%
+#   plyr::rename(replace=c("age_at_sample_coll"="age"))
+# master$donor_type <-
+#   factor(master$donor_type,
+#          levels=c("HC", "at_risk", "T1Dnew"))
+# 
+# master.inc_outliers <- sample_annotation.final.inc_outliers %>%
+#   plyr::rename(replace=c("age_at_sample_coll"="age"))
+# master.inc_outliers$donor_type <-
+#   factor(master.inc_outliers$donor_type,
+#          levels=c("HC", "at_risk", "T1Dnew"))
 
 
 ##### generate vwts objects for general downstream use #####
